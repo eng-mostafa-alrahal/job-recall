@@ -1,0 +1,74 @@
+[
+  {
+    "id": "defense_clearance",
+    "company": "Aegis Defense Systems, Inc.",
+    "title": "Senior Backend Engineer (Python)",
+    "location": "Arlington, VA (On-site)",
+    "source_url": "https://www.linkedin.com/jobs/search/?currentJobId=4100991122&keywords=python",
+    "requisition_id": "REQ-8841",
+    "description_text": "Aegis Defense Systems is seeking a Senior Backend Engineer to build mission-critical data pipelines. Must be a U.S. Citizen. Candidates must hold an active Top Secret / TS/SCI security clearance. We do not offer visa sponsorship for this position. Requires a Bachelor's degree in Computer Science and 5+ years of experience in Python, FastAPI, and PostgreSQL. This role is 100% on-site in Arlington, VA."
+  },
+  {
+    "id": "tech_no_sponsorship",
+    "company": "CloudScale Technologies LLC",
+    "title": "Software Engineer II - Backend",
+    "location": "Austin, TX (Hybrid)",
+    "source_url": "https://boards.greenhouse.io/cloudscale/jobs/7721904?gh_src=linkedin",
+    "requisition_id": "7721904",
+    "description_text": "Reposted 2 days ago. Over 100 applicants. Join CloudScale to build distributed microservices in Python, Docker, and Kubernetes. Applicants must be authorized to work in the United States. We are unable to sponsor visas now or in the future. Requires 3+ years of experience building production backend systems. Bachelor's degree in Computer Science or equivalent practical experience is accepted. Hybrid work mode in Austin, TX."
+  },
+  {
+    "id": "cloudscale_linkedin_duplicate",
+    "company": "CloudScale Technologies",
+    "title": "SWE II - Backend",
+    "location": "Austin, TX",
+    "source_url": "https://www.linkedin.com/jobs/view/9988776655/?trk=public_jobs",
+    "requisition_id": null,
+    "description_text": "Posted 5 days ago. Actively reviewing applicants. Join CloudScale to build distributed microservices in Python, Docker, and Kubernetes. Applicants must be authorized to work in the United States. We are unable to sponsor visas now or in the future. Requires 3+ years of experience building production backend systems. Bachelor's degree in Computer Science or equivalent practical experience is accepted. Hybrid work mode in Austin, TX."
+  },
+  {
+    "id": "new_grad_window",
+    "company": "NovaPay Corp",
+    "title": "Software Engineer - New Grad 2027",
+    "location": "New York, NY (Hybrid)",
+    "source_url": "https://www.indeed.com/ jobs?q=software+engineer&vjk=ab12cd34ef56",
+    "requisition_id": "JR-202701",
+    "description_text": "NovaPay is hiring New Grad Software Engineers! Candidates must be pursuing a Bachelor's or Master's degree in Computer Science and must graduate between December 2026 and June 2027. Visa sponsorship is available for qualified F-1 OPT candidates. Experience with TypeScript, React, and SQL is preferred."
+  },
+  {
+    "id": "contradictory_remote",
+    "company": "Orbit Analytics",
+    "title": "Full Stack Engineer",
+    "location": "Remote - US",
+    "source_url": "https://jobs.lever.co/orbitanalytics/11223344-5566-7788-99aa-bbccddeeff00",
+    "requisition_id": "ORB-402",
+    "description_text": "Location: Remote (United States). Orbit Analytics is looking for a Full Stack Engineer with 4+ years of experience in React, TypeScript, and Python. Note: Candidates must reside within 30 miles of our Chicago headquarters and work in-office 3 days/week."
+  },
+  {
+    "id": "same_title_req_1001",
+    "company": "Acme Corp",
+    "title": "Software Engineer II",
+    "location": "Seattle, WA",
+    "source_url": "https://acme.wd5.myworkdayjobs.com/en-US/External/job/Seattle-WA/Software-Engineer-II_JR-1001",
+    "requisition_id": "JR-1001",
+    "description_text": "Acme Corp Billing Team is looking for a Software Engineer II in Seattle, WA with 3+ years of experience in Python and AWS."
+  },
+  {
+    "id": "same_title_req_1002",
+    "company": "Acme Corporation",
+    "title": "Software Engineer 2",
+    "location": "Seattle, WA",
+    "source_url": "https://acme.wd5.myworkdayjobs.com/en-US/External/job/Seattle-WA/Software-Engineer-II_JR-1002",
+    "requisition_id": "JR-1002",
+    "description_text": "Acme Corp Billing Team is looking for a Software Engineer II in Seattle, WA with 3+ years of experience in Python and AWS."
+  },
+  {
+    "id": "minimal_vague",
+    "company": "Stealth Startup",
+    "title": "Founding Engineer",
+    "location": "Remote",
+    "source_url": "https://jobs.ashbyhq.com/stealthstartup/aaaa1111-bbbb-2222-cccc-333344445555",
+    "requisition_id": null,
+    "description_text": "We are a fast-moving AI startup looking for a Founding Engineer who loves shipping products with Python, TypeScript, and React. Remote work mode."
+  }
+]

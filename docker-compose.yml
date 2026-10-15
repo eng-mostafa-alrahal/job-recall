@@ -1,0 +1,30 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: jobrecall-backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    env_file:
+      - ./backend/.env
+    environment:
+      - JOBRECALL_HOST=0.0.0.0
+      - JOBRECALL_PORT=8765
+      - JOBRECALL_DB_URL=sqlite:////app/data/jobrecall.db
+    volumes:
+      - ./backend/data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/v1/health')",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3

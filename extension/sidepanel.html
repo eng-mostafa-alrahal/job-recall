@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JobRecall</title>
+    <link rel="stylesheet" href="/src/sidepanel/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Top Status & Navigation Header -->
+      <header class="topbar">
+        <div class="brand-row">
+          <div class="brand">
+            <span class="brand-dot" id="health-dot" title="Checking local service..."></span>
+            <strong>JobRecall</strong>
+            <span class="version-tag" id="health-label">Connecting...</span>
+          </div>
+          <button id="btn-recapture" class="btn btn-sm btn-outline" title="Re-capture current tab">
+            Capture Tab
+          </button>
+        </div>
+
+        <nav class="tabs" role="tablist">
+          <button class="tab active" data-tab="job">Current Job</button>
+          <button class="tab" data-tab="eligibility">Eligibility AI</button>
+          <button class="tab" data-tab="resumes">Resumes &amp; Profile</button>
+          <button class="tab" data-tab="history">History</button>
+        </nav>
+      </header>
+
+      <!-- Global Error / Offline Banner -->
+      <div id="global-alert" class="alert alert-error hidden"></div>
+
+      <!-- TAB 1: CURRENT JOB & APPLICATION MEMORY -->
+      <main id="tab-job" class="tab-panel active">
+        <!-- 2-Step Apply Redirect Bridge Prompt -->
+        <div id="redirect-bridge-banner" class="card bridge-card hidden"></div>
+
+        <!-- Instant Match State Banner -->
+        <div id="match-banner" class="match-banner match-neutral">
+          <div class="match-title" id="match-title">Capturing job page...</div>
+          <div class="match-subtitle" id="match-subtitle">
+            Checking local SQLite application history
+          </div>
+        </div>
+
+        <!-- Editable Captured Job Form / Summary -->
+        <section class="card">
+          <div class="section-header">
+            <h2>Captured Posting</h2>
+            <span class="badge" id="captured-platform">other</span>
+          </div>
+          <div class="form-grid">
+            <label>
+              <span>Company</span>
+              <input type="text" id="input-company" placeholder="e.g. Acme Corp" />
+            </label>
+            <label>
+              <span>Job Title</span>
+              <input type="text" id="input-title" placeholder="e.g. Senior Backend Engineer" />
+            </label>
+            <div class="row-2">
+              <label>
+                <span>Location / Mode</span>
+                <input type="text" id="input-location" placeholder="e.g. Austin, TX (Hybrid)" />
+              </label>
+              <label>
+                <span>Requisition ID</span>
+                <input type="text" id="input-req-id" placeholder="Optional (e.g. JR-104)" />
+              </label>
+            </div>
+            <details class="desc-details" open>
+              <summary>Job Description Text (<span id="desc-char-count">0</span> chars)</summary>
+              <textarea
+                id="input-description"
+                rows="6"
+                placeholder="Job description will be captured automatically from the active tab, or paste text here..."
+              ></textarea>
+              <button id="btn-resolve-manual" class="btn btn-sm btn-outline full-width">
+                Re-check Match With Edited Fields
+              </button>
+            </details>
+          </div>
+        </section>
+
+        <!-- Possible Duplicate Candidates Section -->
+        <section id="duplicates-section" class="card hidden">
+          <div class="section-header">
+            <h2>Possible Duplicates Found</h2>
+          </div>
+          <div id="duplicates-list" class="stack-sm"></div>
+        </section>
+
+        <!-- Primary Action Controls (Save / Confirm Applied / Change Status / Notes) -->
+        <section class="card" id="actions-card">
+          <div class="section-header">
+            <h2>Application Actions</h2>
+            <span id="current-status-pill" class="badge">unsaved</span>
+          </div>
+
+          <div class="row-2" id="untracked-actions">
+            <button id="btn-save-job" class="btn btn-secondary">Save for Later</button>
+            <button id="btn-open-apply-modal" class="btn btn-primary">
+              Confirm Applied
+            </button>
+          </div>
+
+          <!-- Confirm Applied / Update Status Panel -->
+          <div id="apply-confirm-panel" class="subpanel hidden">
+            <label>
+              <span>Status</span>
+              <select id="select-status">
+                <option value="applied">Applied (Confirmed Submission)</option>
+                <option value="saved">Saved</option>
+                <option value="in_progress">In Progress</option>
+                <option value="interviewing">Interviewing</option>
+                <option value="offer">Offer Received</option>
+                <option value="rejected">Rejected</option>
+                <option value="withdrawn">Withdrawn</option>
+              </select>
+            </label>
+            <label>
+              <span>Resume Used (Reference)</span>
+              <select id="select-resume">
+                <option value="">-- Unspecified --</option>
+              </select>
+            </label>
+            <label>
+              <span>Confirmation Reference / Note (Optional)</span>
+              <input
+                type="text"
+                id="input-confirm-note"
+                placeholder="e.g. Workday confirmation email received"
+              />
+            </label>
+            <div class="row-2">
+              <button id="btn-submit-status" class="btn btn-primary">Save Status</button>
+              <button id="btn-cancel-status" class="btn btn-outline">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Add Note & History Timeline (shown when a job record exists) -->
+          <div id="tracked-job-details" class="hidden stack-sm">
+            <div class="meta-box" id="tracked-meta-summary"></div>
+
+            <div class="note-row">
+              <input type="text" id="input-new-note" placeholder="Add a note (e.g. Recruiter screen on Friday)..." />
+              <button id="btn-add-note" class="btn btn-sm btn-secondary">Add</button>
+            </div>
+
+            <details open>
+              <summary class="sub-header">Linked Postings (<span id="postings-count">0</span>)</summary>
+              <div id="linked-postings-list" class="stack-xs"></div>
+            </details>
+
+            <details open>
+              <summary class="sub-header">Activity Timeline</summary>
+              <div id="events-timeline" class="timeline"></div>
+            </details>
+          </div>
+        </section>
+      </main>
+
+      <!-- TAB 2: AI ELIGIBILITY & REQUIREMENT EXTRACTION -->
+      <main id="tab-eligibility" class="tab-panel hidden">
+        <!-- One-time External LLM Consent Card -->
+        <section id="ai-consent-card" class="card warn-card hidden">
+          <h3>External AI Analysis Consent</h3>
+          <p class="muted-sm">
+            Analyzing requirements sends only the cleaned job description text to your configured LLM provider. Your application history and personal profile stay 100% local in SQLite.
+          </p>
+          <button id="btn-accept-consent" class="btn btn-primary full-width">
+            I Understand — Enable AI Analysis
+          </button>
+        </section>
+
+        <section class="card">
+          <div class="section-header">
+            <div>
+              <h2>Stated Restrictions</h2>
+              <p class="muted-xs">15s max timeout • Verbatim quote verified</p>
+            </div>
+            <button id="btn-analyze" class="btn btn-primary btn-sm">
+              Analyze Requirements
+            </button>
+          </div>
+
+          <div id="analysis-loading" class="loading-box hidden">
+            <div class="spinner"></div>
+            <span id="analysis-timer-text">Extracting stated restrictions... (15s cutoff)</span>
+          </div>
+
+          <div id="analysis-error" class="alert alert-error hidden"></div>
+
+          <div id="analysis-results" class="hidden stack-sm">
+            <div id="overall-fit-banner" class="fit-banner"></div>
+            <div id="resume-rec-card" class="meta-box hidden"></div>
+            <div id="contradictions-box" class="alert alert-warn hidden"></div>
+            <div id="requirements-cards" class="stack-sm"></div>
+            <div id="not-stated-footer" class="muted-xs footer-box"></div>
+          </div>
+        </section>
+      </main>
+
+      <!-- TAB 3: REUSABLE RESUMES (TEXT + PDF REF) & LOCAL PROFILE -->
+      <main id="tab-resumes" class="tab-panel hidden">
+        <section class="card">
+          <div class="section-header">
+            <h2>Reusable Resumes (Text + PDF Ref)</h2>
+            <button id="btn-toggle-new-resume" class="btn btn-sm btn-outline">+ Add Resume</button>
+          </div>
+          <p class="muted-xs">
+            The PDF is copied into the local JobRecall service. Moving or deleting the original file does not remove it. Applications only store a resume ID.
+          </p>
+
+          <div id="new-resume-form" class="subpanel hidden">
+            <label>
+              <span>Resume Label</span>
+              <input type="text" id="res-label" placeholder="e.g. Backend Python v3" />
+            </label>
+            <label>
+              <span>Target Role</span>
+              <input type="text" id="res-role" placeholder="e.g. Backend Engineer" />
+            </label>
+            <label>
+              <span>Resume Plain Text (or import from PDF below)</span>
+              <textarea id="res-text" rows="5" placeholder="Paste your resume text here..."></textarea>
+            </label>
+            <div class="file-upload-group">
+              <span class="file-group-label">PDF copy stored by the local service:</span>
+              <label for="res-pdf-file" class="file-dropzone" id="res-file-dropzone">
+                <input type="file" id="res-pdf-file" accept=".pdf" class="file-input-hidden" />
+                <div class="file-dropzone-content">
+                  <span class="btn btn-sm btn-secondary file-choose-btn">Choose PDF File</span>
+                  <span class="file-selected-name" id="res-file-name">No PDF selected</span>
+                </div>
+                <button type="button" id="btn-clear-pdf" class="btn btn-sm btn-outline hidden" title="Clear selected PDF">
+                  ✕
+                </button>
+              </label>
+            </div>
+            <label class="checkbox-row">
+              <input type="checkbox" id="res-default" checked />
+              <span>Set as default resume &amp; auto-sync skills/degree to profile</span>
+            </label>
+            <button id="btn-save-resume" class="btn btn-primary full-width">
+              Save Reusable Resume
+            </button>
+          </div>
+
+          <div id="resumes-list" class="stack-sm"></div>
+        </section>
+
+        <section class="card">
+          <div class="section-header">
+            <h2>Local Eligibility Profile</h2>
+          </div>
+          <p class="muted-xs">
+            Stored only on your device in SQLite. Used for deterministic hard-gate checks.
+          </p>
+          <div class="form-grid">
+            <div class="row-2">
+              <label>
+                <span>U.S. Citizen?</span>
+                <select id="prof-citizen">
+                  <option value="">Unspecified</option>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </label>
+              <label>
+                <span>Authorized to Work in US?</span>
+                <select id="prof-work-auth">
+                  <option value="">Unspecified</option>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </label>
+            </div>
+            <div class="row-2">
+              <label>
+                <span>Requires Visa Sponsorship?</span>
+                <select id="prof-sponsorship">
+                  <option value="">Unspecified</option>
+                  <option value="false">No</option>
+                  <option value="true">Yes (Now or Future)</option>
+                </select>
+              </label>
+              <label>
+                <span>Security Clearance</span>
+                <select id="prof-clearance">
+                  <option value="none">None</option>
+                  <option value="public_trust">Public Trust</option>
+                  <option value="secret">Secret</option>
+                  <option value="top_secret">Top Secret</option>
+                  <option value="ts_sci">TS/SCI</option>
+                  <option value="ts_sci_poly">TS/SCI + Poly</option>
+                </select>
+              </label>
+            </div>
+            <div class="row-3">
+              <label>
+                <span>Highest Degree</span>
+                <select id="prof-degree">
+                  <option value="">Unspecified</option>
+                  <option value="associate">Associate</option>
+                  <option value="bachelor">Bachelor's</option>
+                  <option value="master">Master's</option>
+                  <option value="phd">PhD</option>
+                </select>
+              </label>
+              <label>
+                <span>Grad Date</span>
+                <input type="text" id="prof-grad" placeholder="YYYY-MM" />
+              </label>
+              <label>
+                <span>Years Exp</span>
+                <input type="number" step="0.5" id="prof-years" placeholder="e.g. 3.5" />
+              </label>
+            </div>
+            <button id="btn-save-profile" class="btn btn-primary full-width">
+              Save Local Profile
+            </button>
+          </div>
+        </section>
+      </main>
+
+      <!-- TAB 4: HISTORY SEARCH, EXPORT & CONNECTION SETTINGS -->
+      <main id="tab-history" class="tab-panel hidden">
+        <section class="card">
+          <div class="section-header">
+            <h2>Application History</h2>
+            <button id="btn-export-json" class="btn btn-sm btn-outline">Export JSON</button>
+          </div>
+          <div class="row-2">
+            <input type="text" id="history-search-q" placeholder="Search company, title, req ID..." />
+            <select id="history-filter-status">
+              <option value="">All Statuses</option>
+              <option value="applied">Applied</option>
+              <option value="saved">Saved</option>
+              <option value="interviewing">Interviewing</option>
+              <option value="offer">Offer</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </div>
+          <div id="history-jobs-list" class="stack-sm"></div>
+        </section>
+
+        <section class="card">
+          <div class="section-header">
+            <h2>Local API Connection Settings</h2>
+          </div>
+          <div class="form-grid">
+            <label>
+              <span>FastAPI Base URL</span>
+              <input type="text" id="set-api-url" placeholder="http://127.0.0.1:8765" />
+            </label>
+            <label>
+              <span>Local API Token (X-JobRecall-Token)</span>
+              <input type="password" id="set-api-token" />
+            </label>
+            <button id="btn-save-settings" class="btn btn-secondary full-width">
+              Save &amp; Test Connection
+            </button>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/src/sidepanel/main.ts"></script>
+  </body>
+</html>
