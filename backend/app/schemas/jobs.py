@@ -52,6 +52,15 @@ class PostingRead(BaseModel):
     last_seen_at: datetime
 
 
+class JobApplicationRead(BaseModel):
+    id: str
+    job_id: str
+    applied_at: datetime
+    resume_id: str | None = None
+    resume_label: str | None = None
+    note: str | None = None
+
+
 class JobEventRead(BaseModel):
     id: str
     job_id: str
@@ -76,6 +85,7 @@ class JobRead(BaseModel):
     canonical_ats_url: str | None = None
     status: JobStatus
     applied_at: datetime | None = None
+    application_count: int = 0
     applied_via_posting_id: str | None = None
     resume_id: str | None = None
     resume_label: str | None = None
@@ -84,6 +94,7 @@ class JobRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     postings: list[PostingRead] = Field(default_factory=list)
+    applications: list[JobApplicationRead] = Field(default_factory=list)
     events: list[JobEventRead] = Field(default_factory=list)
 
 

@@ -14,7 +14,7 @@ def resume_storage_dir(settings: Settings) -> Path:
     PDFs live next to the SQLite database (`data/resumes/`), which Docker already
     mounts as a persistent volume. In-memory test databases use a temp folder.
     """
-    url = settings.jobrecall_db_url
+    url = settings.resolved_db_url
     if url.startswith("sqlite:///") and ":memory:" not in url:
         raw = url.removeprefix("sqlite:///")
         db_path = Path(raw).expanduser()

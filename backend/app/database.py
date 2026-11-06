@@ -22,7 +22,7 @@ def _ensure_sqlite_dir(db_url: str) -> None:
 
 def create_db_engine(db_url: str | None = None) -> Engine:
     settings = get_settings()
-    target_url = db_url or settings.jobrecall_db_url
+    target_url = db_url or settings.resolved_db_url
     _ensure_sqlite_dir(target_url)
 
     connect_args = {"check_same_thread": False} if target_url.startswith("sqlite") else {}

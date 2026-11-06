@@ -15,7 +15,7 @@ Independently, an on-demand (or opt-in automatic) **LangChain AI extraction pipe
 
 ### Core Goals
 1. **Instant Application Recall (<1s):** Show known history for the current job without manual searching, completely independent of LLM speed or availability.
-2. **Accurate Cross-Platform Deduplication:** Identify the same job across LinkedIn, Indeed, Dice, and ATS platforms (Workday, Greenhouse, Lever, Ashby) without falsely merging distinct openings at the same company.
+2. **Accurate Cross-Platform Deduplication:** Identify the same job across LinkedIn, Indeed, Dice, Jobright, and ATS platforms (Workday, Greenhouse, Lever, Ashby) without falsely merging distinct openings at the same company.
 3. **Verifiable Requirement Extraction:** Surface stated restrictions with required vs. preferred distinctions and verified verbatim quotes from the posting text.
 4. **100% Local Data Ownership:** Keep all application records and personal profile data in a local SQLite database on the user's machine (`127.0.0.1`).
 5. **Graceful Degradation:** Enforce a strict 15-second cutoff on AI calls with caching and clear fallback states.
@@ -37,25 +37,31 @@ To make JobRecall reliable in real-world daily job hunting, this specification i
 - **Problem:** Modern browsers enforce Private Network Access (PNA) and Content Security Policy (CSP) restrictions that block Content Scripts running inside `https://www.linkedin.com` from calling `http://127.0.0.1`.
 - **Solution:** Content Scripts **never** call FastAPI directly. Content Scripts only extract DOM data and send messages via `chrome.runtime.sendMessage` to the **Extension Background Service Worker** (or Side Panel), which owns the local API token and performs all `fetch("http://127.0.0.1:8765/...")` requests.
 
-### 2.3 Two-Step "Apply Redirect" Bridging (Job Board -> External ATS)
-- **Problem:** When viewing a job on LinkedIn or Indeed, the destination ATS URL (e.g., `acme.wd5.myworkdayjobs.com/.../job/JR-10492`) is often hidden behind an obfuscated redirect until the user clicks "Apply".
+### 2.3 Two-Step "Apply Redirect" Bridging & ATS Confirmation Page Protection
+- **Problem:**
+  1. When viewing a job on LinkedIn or Indeed, the destination ATS URL (e.g., `acme.wd5.myworkdayjobs.com/.../job/JR-10492`) is often hidden behind an obfuscated redirect until the user clicks "Apply".
+  2. When completing an application wizard on an ATS portal (e.g., Taleo `candidateacquisition/flow.jsf`), the final page title often changes to `"Thank You"` or `"Application Submitted"` with no job description. If the user clicks **"Confirm Applied"** on that confirmation screen, a naive capture would overwrite the real job title with `"Thank You"`.
 - **Solution:**
-  - The Background Service Worker keeps an ephemeral `lastViewedBoardPosting` state in `chrome.storage.session` (valid for 5 minutes).
-  - When a user clicks "Apply" on LinkedIn/Indeed and lands on an external ATS page in a new tab with a matching company/title, JobRecall offers a one-click banner: **"Link this ATS page to the LinkedIn posting for [Title] at [Company]?"** (or auto-links if the user clicked "Track Apply Redirect" from the Side Panel).
-  - This connects the job board posting (`LinkedIn ID`) and the canonical ATS posting (`Workday JR-10492`) under a single `Job` record.
+  - The Background Service Worker keeps `last_viewed_board_posting` and `last_valid_posting` in `chrome.storage.session` and `chrome.storage.local`.
+  - When a user clicks through an ATS wizard or lands on a `"Thank You"` confirmation screen (`flow.jsf`, `application-submitted`, etc.), both the extension and backend (`_RECENT_RESOLVED_POSTINGS`) preserve the real job's title, company, URL, and description so confirming the application records the actual role.
+  - If a historical record was saved with a placeholder title (`"Thank You"`) or a generic board hostname (`"linkedin"`), the matcher automatically self-heals the job record when matched against the real posting.
 
-### 2.4 Consolidated Data Model (`Job` + `Posting` + `JobEvent`)
-- **Problem:** Separating `Job` and `Application` into distinct tables adds unnecessary join complexity for a single-user tracker where a user's relationship to a canonical job opening is 1-to-1.
+### 2.4 Consolidated Data Model (`Job` + `Posting` + `JobApplication` + `JobEvent`)
+- **Problem:** The same opening can be submitted more than once, often a month or two apart. One `applied_at` value would replace the earlier date.
 - **Solution:**
-  - **`Job`** represents the canonical job opening *and* the user's current tracking state (`status`, `applied_at`, `applied_via_posting_id`, `resume_version`, `is_archived`).
+  - **`Job`** remains the canonical opening and the current tracking state (`status`, latest `applied_at`, latest `resume_id`).
+  - **`JobApplication`** stores every confirmed submission: today's date and the resume used that time. Earlier rows are kept.
   - **`Posting`** represents each URL/platform where that `Job` was observed (1 `Job` -> many `Postings`).
   - **`JobEvent`** records an immutable audit trail of every status transition, note, duplicate link/unlink action, and confirmation reference.
 
-### 2.5 Cleaned Text Normalization & Two-Tier Hashing
-- **Problem:** Job boards inject dynamic text ("Posted 2 days ago", "Over 100 applicants", "Meet the hiring team") that changes a raw SHA-256 hash every day even when the job description itself is identical.
+### 2.5 Cleaned Text Normalization, Core Title Extraction & Multi-Signal Repost Matching
+- **Problem:**
+  1. Job boards inject dynamic text ("Posted 2 days ago", "Over 100 applicants") and unicode bullets (`\u00b7`, `•`) that alter raw hashes or glue words together.
+  2. Companies frequently repost the same job with new platform IDs and noisy titles (e.g., `"Gen AI Engineer - Irving, TX OR Tampa, FL (Full Time Only)"` vs. `"Generative AI Engineer"`), or add extra company/EEO boilerplate on one board.
 - **Solution:**
-  - Strip dynamic UI chrome, normalize whitespace/case/punctuation, and compute `cleaned_text_hash` (SHA-256 of normalized description text) for **LLM cache lookups**.
-  - For **cross-platform duplicate detection**, compute token sets / trigram similarity on the cleaned description alongside normalized `(company, title, location)` so slight formatting differences between LinkedIn and Greenhouse still match reliably.
+  - Strip dynamic UI chrome, replace unicode bullets with spaces, normalize whitespace/case/punctuation, and compute `cleaned_text_hash` (SHA-256 of normalized description text) for **LLM cache lookups** and exact text matching.
+  - Strip trailing location segments (`- Irving, TX OR Tampa, FL`), city/state pairs, and parenthetical employment tags (`(Full Time Only)`, `(Remote)`) via `extract_core_job_title()` so reposted titles normalize to the same core role.
+  - Compute multi-signal description similarity (`compute_description_similarity`) combining token Jaccard, token Dice, token containment (handling extra company/EEO boilerplate or shorter excerpts), and 2-word technical phrase bigrams alongside fuzzy company similarity (`company_similarity`).
 
 ### 2.6 Fixed-Slot Pydantic Extraction + Deterministic Quote Verification
 - **Problem:** If an LLM returns a variable-length array of requirements, it is ambiguous whether an omitted category was "not stated" or forgotten by the model. Furthermore, LLMs occasionally paraphrase quotes.
@@ -79,7 +85,7 @@ To make JobRecall reliable in real-world daily job hunting, this specification i
 ### Flow A: Opening or Capturing a Job Posting (History First)
 
 1. **Detection or Manual Trigger:**
-   - As the user browses a supported site (LinkedIn, Indeed, Dice, Greenhouse, Lever, Workday, Ashby) with the Side Panel open, the Content Script extracts available metadata (`platform`, `source_url`, `source_posting_id`, `requisition_id`, `company`, `title`, `location`, `description_text`).
+   - As the user browses a supported site (LinkedIn, Indeed, Dice, Jobright, Greenhouse, Lever, Workday, Ashby) with the Side Panel open, the Content Script extracts available metadata (`platform`, `source_url`, `source_posting_id`, `requisition_id`, `company`, `title`, `location`, `description_text`). On Jobright the employer is the company named on the posting, not Jobright.ai.
    - On unsupported sites—or if DOM selectors change—the user can highlight text and click **"Capture Selected Text"** or paste into the Side Panel's **Manual Capture** form.
 2. **Instant Resolution (`POST /api/jobs/resolve`):**
    - The extension sends the extracted payload to the local FastAPI backend.

@@ -73,6 +73,12 @@ class Job(Base):
     events: Mapped[list["JobEvent"]] = relationship(
         "JobEvent", back_populates="job", cascade="all, delete-orphan", order_by="JobEvent.created_at.desc()"
     )
+    applications: Mapped[list["JobApplication"]] = relationship(
+        "JobApplication",
+        back_populates="job",
+        cascade="all, delete-orphan",
+        order_by="JobApplication.applied_at.desc()",
+    )
     dismissed_duplicates: Mapped[list["DismissedDuplicate"]] = relationship(
         "DismissedDuplicate", back_populates="job", cascade="all, delete-orphan"
     )
@@ -102,6 +108,26 @@ class Posting(Base):
     __table_args__ = (
         Index("ix_postings_platform_source_id", "platform", "source_posting_id"),
     )
+
+
+class JobApplication(Base):
+    """One confirmed submission of a resume to a job. A job can have many over time."""
+
+    __tablename__ = "job_applications"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    resume_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    job: Mapped["Job"] = relationship("Job", back_populates="applications")
+    resume: Mapped["Resume | None"] = relationship("Resume")
 
 
 class JobEvent(Base):

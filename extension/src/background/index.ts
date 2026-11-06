@@ -9,14 +9,107 @@ chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch(() => {});
 
-const BOARD_HOSTS = ["linkedin.com", "indeed.com", "dice.com"];
+const BOARD_HOSTS = [
+  "linkedin.com",
+  "indeed.com",
+  "dice.com",
+  "glassdoor.com",
+  "ziprecruiter.com",
+  "monster.com",
+  "simplyhired.com",
+  "wellfound.com",
+  "builtin.com",
+  "jobright.ai",
+];
 const ATS_HOSTS = [
   "greenhouse.io",
   "myworkdayjobs.com",
   "myworkdaysite.com",
   "lever.co",
   "ashbyhq.com",
+  "taleo.net",
+  "icims.com",
+  "smartrecruiters.com",
+  "jobvite.com",
+  "workable.com",
+  "oraclecloud.com",
 ];
+
+function isBoardHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^www\./, "");
+  return BOARD_HOSTS.some((board) => host === board || host.endsWith(`.${board}`));
+}
+
+function jobrightHeading(
+  title: string | null | undefined
+): { title: string; company: string } | null {
+  const match = (title || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .match(/^(.*?)\s+@\s+(.*?)\s*\|\s*Jobright(?:\.ai)?$/i);
+  if (!match) return null;
+  const company = match[2].trim();
+  if (!company || /^jobright(?:\.ai|\s+ai)?$/i.test(company)) return null;
+  return { title: match[1].trim(), company };
+}
+
+function isJobrightBoardCompany(name: string | null | undefined): boolean {
+  const compact = (name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return (
+    !compact ||
+    compact === "jobright" ||
+    compact === "jobrightai" ||
+    compact === "unknowncompany" ||
+    compact === "company"
+  );
+}
+
+function recoverJobrightCompany(
+  posting: ExtractedPagePosting,
+  tabTitle?: string | null
+): ExtractedPagePosting {
+  let host = "";
+  try {
+    host = new URL(posting.source_url).hostname.toLowerCase();
+  } catch {
+    return posting;
+  }
+  if (!host.includes("jobright.ai") || !isJobrightBoardCompany(posting.company)) {
+    return posting;
+  }
+  const heading = jobrightHeading(tabTitle) || jobrightHeading(posting.title);
+  if (!heading) return posting;
+  return {
+    ...posting,
+    platform: posting.platform || "jobright",
+    company: heading.company,
+    title:
+      posting.title && !/^(?:untitled position|job posting)$/i.test(posting.title)
+        ? posting.title
+        : heading.title,
+  };
+}
+
+const PLACEHOLDER_TITLE_RE =
+  /^(?:thank you|thanks for applying|thank you for applying|application submitted|application received|application confirmation|confirmation|candidate acquisition|career section|careers|apply|apply now|apply online|job application|untitled position|job posting|sign in|log in|login|workday|my workday|taleo|icims|greenhouse)$/i;
+
+function isPlaceholderOrWizardPosting(p: ExtractedPagePosting | null | undefined): boolean {
+  if (!p) return true;
+  const title = (p.title || "").trim();
+  if (!title || PLACEHOLDER_TITLE_RE.test(title)) {
+    return true;
+  }
+  const url = (p.source_url || "").toLowerCase();
+  if (
+    /\/candidateacquisition\/flow\.jsf|\/apply\/(?:thank-?you|confirmation|submitted)/i.test(
+      url
+    ) &&
+    (!p.description_text || p.description_text.trim().length < 80)
+  ) {
+    return true;
+  }
+  return false;
+}
 
 export interface RecentBoardPosting {
   posting: ExtractedPagePosting;
@@ -41,16 +134,53 @@ async function recordBoardPostingIfApplicable(
   posting: ExtractedPagePosting
 ): Promise<void> {
   try {
+    if (isPlaceholderOrWizardPosting(posting)) {
+      return;
+    }
+    const entry: RecentBoardPosting = {
+      posting,
+      timestamp: Date.now(),
+    };
+    await chrome.storage.session.set({ last_valid_posting: entry });
+
     const host = new URL(posting.source_url).hostname.toLowerCase();
     if (BOARD_HOSTS.some((b) => host.includes(b))) {
-      const entry: RecentBoardPosting = {
-        posting,
-        timestamp: Date.now(),
-      };
       await chrome.storage.session.set({ last_board_posting: entry });
     }
   } catch {
     // Ignore invalid URLs
+  }
+}
+
+async function mergeWithLastValidPostingIfWizard(
+  current: ExtractedPagePosting
+): Promise<ExtractedPagePosting> {
+  if (!isPlaceholderOrWizardPosting(current)) {
+    return current;
+  }
+  try {
+    const data = await chrome.storage.session.get([
+      "last_valid_posting",
+      "last_board_posting",
+    ]);
+    const recent: RecentBoardPosting | undefined =
+      data.last_valid_posting || data.last_board_posting;
+    if (!recent || Date.now() - recent.timestamp > 30 * 60 * 1000) {
+      return current;
+    }
+    const prev = recent.posting;
+    return {
+      ...prev,
+      company:
+        current.company &&
+        current.company.toLowerCase() !== "unknown company" &&
+        prev.company.toLowerCase() === "unknown company"
+          ? current.company
+          : prev.company,
+      canonical_ats_url: current.source_url,
+    };
+  } catch {
+    return current;
   }
 }
 
@@ -68,8 +198,8 @@ export async function checkRecentBoardRedirect(
     const recent: RecentBoardPosting | undefined = data.last_board_posting;
     if (!recent) return null;
 
-    // 5-minute TTL
-    if (Date.now() - recent.timestamp > 5 * 60 * 1000) {
+    // 15-minute TTL
+    if (Date.now() - recent.timestamp > 15 * 60 * 1000) {
       return null;
     }
     return recent;
@@ -224,17 +354,50 @@ async function extractFromActiveTab(): Promise<ExtractedPagePosting | null> {
             document.querySelector('[itemprop="description"]');
           const bodyText = readable(descContainer).slice(0, 18000);
           const h1 = readable(document.querySelector("h1"));
+          const hostName = window.location.hostname.replace(/^www\./, "").toLowerCase();
+          const isJobright = hostName === "jobright.ai" || hostName.endsWith(".jobright.ai");
+          let jobrightCompany = "";
+          let jobrightTitle = "";
+          const heading = (document.title || "").match(
+            /^(.*?)\s+@\s+(.*?)\s*\|\s*Jobright(?:\.ai)?\s*$/i
+          );
+          if (heading && !/^jobright(?:\.ai|\s+ai)?$/i.test(heading[2].trim())) {
+            jobrightTitle = clean(heading[1]);
+            jobrightCompany = clean(heading[2]);
+          }
+          if (isJobright) {
+            try {
+              const raw =
+                document.getElementById("jobright-helper-job-detail-info")?.textContent || "";
+              if (raw) {
+                const data = JSON.parse(raw) as {
+                  jobResult?: { jobTitle?: string };
+                  companyResult?: { companyName?: string };
+                };
+                const name = clean(data.companyResult?.companyName);
+                const jobTitle = clean(data.jobResult?.jobTitle);
+                if (name && !/^jobright(?:\.ai|\s+ai)?$/i.test(name)) jobrightCompany = name;
+                if (jobTitle) jobrightTitle = jobTitle;
+              }
+            } catch {
+              // Ignore malformed Jobright JSON
+            }
+          }
+          const ogName = clean(
+            document.querySelector('meta[property="og:site_name"]')?.getAttribute("content")
+          );
+          const ogIsBoard = !ogName || /^jobright(?:\.ai|\s+ai)?$/i.test(ogName);
           return {
             source_url: window.location.href,
             company:
-              clean(
-                document
-                  .querySelector('meta[property="og:site_name"]')
-                  ?.getAttribute("content")
-              ) ||
-              window.location.hostname.replace(/^www\./, "").split(".")[0] ||
+              jobrightCompany ||
+              (!isJobright && !ogIsBoard ? ogName : "") ||
+              (!isJobright
+                ? window.location.hostname.replace(/^www\./, "").split(".")[0]
+                : "") ||
               "Unknown Company",
             title:
+              jobrightTitle ||
               h1 ||
               document.title.split("|")[0]?.split("-")[0]?.trim() ||
               "Untitled Position",
@@ -276,19 +439,28 @@ async function extractFromActiveTab(): Promise<ExtractedPagePosting | null> {
   }
 
   if (extracted) {
+    extracted = recoverJobrightCompany(extracted, tab.title);
     await recordBoardPostingIfApplicable(extracted);
-    return extracted;
+    return await mergeWithLastValidPostingIfWizard(extracted);
   }
 
-  return {
+  const fallbackHost = new URL(tab.url).hostname.replace(/^www\./i, "").toLowerCase();
+  const heading = jobrightHeading(tab.title);
+  const fallback: ExtractedPagePosting = {
     source_url: tab.url,
-    company:
-      new URL(tab.url).hostname.replace(/^www\./, "").split(".")[0] ||
-      "Company",
-    title: tab.title?.split("|")[0]?.split("-")[0]?.trim() || "Job Posting",
+    company: heading
+      ? heading.company
+      : isBoardHost(fallbackHost)
+        ? "Unknown Company"
+        : fallbackHost.split(".")[0] || "Company",
+    title: heading?.title || tab.title?.split("|")[0]?.split("-")[0]?.trim() || "Job Posting",
     location: null,
     description_text: "",
+    platform: fallbackHost.includes("jobright.ai") ? "jobright" : null,
   };
+  return await mergeWithLastValidPostingIfWizard(
+    recoverJobrightCompany(fallback, tab.title)
+  );
 }
 
 // Central message router for Side Panel and Content Scripts
@@ -318,11 +490,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
     if (msg?.type === "PAGE_JOB_UPDATED" && msg.payload) {
       await recordBoardPostingIfApplicable(msg.payload);
+      const effectivePayload = await mergeWithLastValidPostingIfWizard(
+        msg.payload
+      );
       // Forward to open Side Panel
       chrome.runtime
         .sendMessage({
           type: "SIDEPANEL_JOB_CHANGED",
-          payload: msg.payload,
+          payload: effectivePayload,
         })
         .catch(() => {});
       sendResponse({ ok: true });

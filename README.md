@@ -13,7 +13,7 @@
 JobRecall solves two daily problems for active job seekers:
 
 1. **Application Memory ("Have I seen or applied to this job already?"):**  
-   Job postings appear across multiple boards (LinkedIn, Indeed, Dice) and external ATS portals (Workday, Greenhouse, Lever, Ashby, iCIMS). JobRecall resolves the currently viewed job against your local SQLite database in **under 1 second**—identifying exact matches, cross-posted duplicates, and separate openings that happen to share the same title.
+   Job postings appear across multiple boards (LinkedIn, Indeed, Dice, Jobright) and external ATS portals (Workday, Greenhouse, Lever, Ashby, iCIMS). JobRecall resolves the currently viewed job against your local SQLite database in **under 1 second**—identifying exact matches, cross-posted duplicates, and separate openings that happen to share the same title.
 2. **Evidence-Backed Eligibility Triage ("Can I actually apply to this job?"):**  
    Job descriptions bury dealbreakers (U.S. citizenship, no visa sponsorship, active security clearance, graduation date windows, strict years of experience, or on-site residency). On demand, JobRecall uses a single structured LangChain LLM call to extract stated restrictions with **verbatim verified quotes**, comparing hard gates against your local profile without ever letting slow or offline AI block your application history.
 
@@ -81,10 +81,9 @@ job-recall/
 │   │       └── comparator.py         # Profile + Resume text vs. Job requirement evaluator
 │   └── tests/
 │       ├── fixtures/                 # Sample job postings & edge cases
-│       ├── test_normalizer.py
-│       ├── test_matcher.py
-│       ├── test_jobs_api.py
-│       └── test_analyzer.py
+│       ├── conftest.py
+│       ├── test_normalizer_and_matcher.py
+│       └── test_api_and_analyzer.py
 └── extension/
     ├── package.json
     ├── tsconfig.json

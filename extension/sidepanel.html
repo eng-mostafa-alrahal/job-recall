@@ -126,6 +126,9 @@
                 <option value="">-- Unspecified --</option>
               </select>
             </label>
+            <p class="muted-xs" id="apply-date-hint">
+              Saving as Applied records today's date and the resume you select. Earlier applications stay on this job.
+            </p>
             <label>
               <span>Confirmation Reference / Note (Optional)</span>
               <input
@@ -148,6 +151,11 @@
               <input type="text" id="input-new-note" placeholder="Add a note (e.g. Recruiter screen on Friday)..." />
               <button id="btn-add-note" class="btn btn-sm btn-secondary">Add</button>
             </div>
+
+            <details open>
+              <summary class="sub-header">Applications (<span id="applications-count">0</span>)</summary>
+              <div id="applications-list" class="timeline"></div>
+            </details>
 
             <details open>
               <summary class="sub-header">Linked Postings (<span id="postings-count">0</span>)</summary>

@@ -48,6 +48,53 @@ function formatDate(iso: string | null | undefined): string {
   }
 }
 
+function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return "Unknown date";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function applicationsNewestFirst(job: JobRead): JobRead["applications"] {
+  return [...(job.applications || [])].sort(
+    (a, b) => new Date(b.applied_at).getTime() - new Date(a.applied_at).getTime()
+  );
+}
+
+function sameOpeningAsForm(job: JobRead): boolean {
+  const company = $<HTMLInputElement>("input-company").value.trim().toLowerCase();
+  const title = $<HTMLInputElement>("input-title").value.trim().toLowerCase();
+  if (!company || !title) return false;
+  return (
+    job.company_raw.trim().toLowerCase() === company &&
+    job.title_raw.trim().toLowerCase() === title
+  );
+}
+
+function applicationSummary(job: JobRead): string {
+  const apps = applicationsNewestFirst(job);
+  if (apps.length === 0) {
+    return job.applied_at
+      ? `Applied on ${formatDate(job.applied_at)}`
+      : "Confirmed in local database";
+  }
+  const latest = apps[0];
+  const resume = latest.resume_label ? ` • Resume: ${latest.resume_label}` : "";
+  if (apps.length === 1) {
+    return `Applied on ${formatDate(latest.applied_at)}${resume}`;
+  }
+  const first = apps[apps.length - 1];
+  return `Applied ${apps.length} times. Latest ${formatDate(latest.applied_at)}${resume}. First ${formatDate(first.applied_at)}.`;
+}
+
 async function apiCall<T = unknown>(
   path: string,
   method = "GET",
@@ -112,7 +159,32 @@ async function checkHealth(): Promise<boolean> {
   return true;
 }
 
+const PLACEHOLDER_TITLE_RE =
+  /^(?:thank you|thanks for applying|thank you for applying|application submitted|application received|application confirmation|confirmation|candidate acquisition|career section|careers|apply|apply now|apply online|job application|untitled position|job posting|sign in|log in|login|workday|my workday|taleo|icims|greenhouse)$/i;
+
 function syncFormFromPosting(p: ExtractedPagePosting): void {
+  const existingTitle = $<HTMLInputElement>("input-title").value.trim();
+  const existingDesc = $<HTMLTextAreaElement>("input-description").value.trim();
+  const incomingIsWizard =
+    PLACEHOLDER_TITLE_RE.test((p.title || "").trim()) &&
+    (!p.description_text || p.description_text.trim().length < 80);
+
+  if (incomingIsWizard && existingTitle && !PLACEHOLDER_TITLE_RE.test(existingTitle)) {
+    if (
+      p.company &&
+      p.company.toLowerCase() !== "unknown company" &&
+      (!$<HTMLInputElement>("input-company").value.trim() ||
+        $<HTMLInputElement>("input-company").value.trim().toLowerCase() === "unknown company")
+    ) {
+      $<HTMLInputElement>("input-company").value = p.company;
+    }
+    if (!existingDesc && p.description_text) {
+      $<HTMLTextAreaElement>("input-description").value = p.description_text;
+      $("desc-char-count").textContent = String(p.description_text.length);
+    }
+    return;
+  }
+
   $<HTMLInputElement>("input-company").value = p.company || "";
   $<HTMLInputElement>("input-title").value = p.title || "";
   $<HTMLInputElement>("input-location").value = p.location || "";
@@ -158,13 +230,32 @@ function renderJobDetails(job: JobRead | null): void {
       : "badge badge-amber";
 
   saveBtn.textContent = "Update Status";
-  applyModalBtn.textContent =
-    job.status === "applied" ? "Update Application" : "Confirm Applied";
+  const applyCount = job.application_count || job.applications?.length || 0;
+  applyModalBtn.textContent = applyCount > 0 ? "Apply Again" : "Confirm Applied";
 
   detailsBox.classList.remove("hidden");
+  const apps = applicationsNewestFirst(job);
+  $("applications-count").textContent = String(apps.length);
+  $("applications-list").innerHTML =
+    apps.length === 0
+      ? `<div class="muted-xs">No applications recorded yet.</div>`
+      : apps
+          .map(
+            (app, index) => `
+      <div class="timeline-item">
+        <div><strong>${index === 0 ? "Latest" : `Application ${apps.length - index}`}</strong> · ${formatDateTime(app.applied_at)}</div>
+        <div class="timeline-time">${
+          app.resume_label
+            ? `Resume: ${escapeHtml(app.resume_label)}`
+            : "Resume not recorded"
+        }${app.note ? ` · ${escapeHtml(app.note)}` : ""}</div>
+      </div>`
+          )
+          .join("");
+
   const summaryLines = [
     `<strong>Status:</strong> ${escapeHtml(job.status)}`,
-    job.applied_at ? `<strong>Applied on:</strong> ${formatDate(job.applied_at)}` : "",
+    apps.length > 0 ? `<strong>Applications:</strong> ${applicationSummary(job)}` : "",
     job.resume_label
       ? `<strong>Resume Used:</strong> ${escapeHtml(job.resume_label)} ${
           job.resume_pdf_ref
@@ -303,11 +394,7 @@ function renderResolveOutcome(res: ResolveJobResponse): void {
   if (res.match_state === "previously_applied" && res.matched_job) {
     banner.className = "match-banner match-applied";
     title.textContent = `Previously Applied (${res.matched_job.status.toUpperCase()})`;
-    sub.textContent = `Applied on ${formatDate(res.matched_job.applied_at)} • ${
-      res.matched_job.resume_label
-        ? `Resume: ${res.matched_job.resume_label}`
-        : "Confirmed in local database"
-    }`;
+    sub.textContent = applicationSummary(res.matched_job);
     renderJobDetails(res.matched_job);
     renderCandidates([]);
   } else if (res.match_state === "saved_in_progress" && res.matched_job) {
@@ -316,6 +403,22 @@ function renderResolveOutcome(res: ResolveJobResponse): void {
     sub.textContent = `First saved ${formatDate(res.matched_job.created_at)} — not marked as applied yet.`;
     renderJobDetails(res.matched_job);
     renderCandidates([]);
+  } else if (res.match_state === "possible_duplicate" && res.candidate_matches.length > 0) {
+    const bestCand = res.candidate_matches[0];
+    const bestJob = res.matched_job || bestCand.job;
+    const isSavedOnly =
+      bestJob.status === "saved" || bestJob.status === "in_progress";
+    banner.className = isSavedOnly
+      ? "match-banner match-saved"
+      : "match-banner match-applied";
+    title.textContent = isSavedOnly
+      ? `Saved / In Progress (${bestJob.status})`
+      : `Previously Applied (${bestJob.status.toUpperCase()})`;
+    sub.textContent = `${applicationSummary(bestJob)} • ${Math.round(
+      bestCand.confidence * 100
+    )}% match`;
+    renderJobDetails(bestJob);
+    renderCandidates(res.candidate_matches);
   } else if (res.match_state === "possible_duplicate") {
     banner.className = "match-banner match-duplicate";
     title.textContent = `Possible Duplicate Found (${res.candidate_matches.length})`;
@@ -323,6 +426,21 @@ function renderResolveOutcome(res: ResolveJobResponse): void {
       "Similar posting exists in your history. Inspect below to link or keep separate.";
     renderJobDetails(null);
     renderCandidates(res.candidate_matches);
+  } else if (
+    currentMatchedJob &&
+    sameOpeningAsForm(currentMatchedJob)
+  ) {
+    banner.className =
+      currentMatchedJob.status === "saved" || currentMatchedJob.status === "in_progress"
+        ? "match-banner match-saved"
+        : "match-banner match-applied";
+    title.textContent =
+      currentMatchedJob.status === "saved" || currentMatchedJob.status === "in_progress"
+        ? `Saved / In Progress (${currentMatchedJob.status})`
+        : `Previously Applied (${currentMatchedJob.status.toUpperCase()})`;
+    sub.textContent = applicationSummary(currentMatchedJob);
+    renderJobDetails(currentMatchedJob);
+    renderCandidates([]);
   } else {
     banner.className = "match-banner match-neutral";
     title.textContent = "No Local Record Found";
@@ -679,7 +797,9 @@ async function loadHistoryList(): Promise<void> {
         </div>
         <div class="muted-xs">
           ${
-            j.applied_at
+            j.application_count > 1
+              ? `Applied ${j.application_count} times • latest ${formatDate(j.applied_at)}`
+              : j.applied_at
               ? `Applied ${formatDate(j.applied_at)}`
               : `Saved ${formatDate(j.created_at)}`
           }
@@ -799,15 +919,16 @@ async function initSidePanel(): Promise<void> {
     const resumeId = $<HTMLSelectElement>("select-resume").value || null;
     const note = $<HTMLInputElement>("input-confirm-note").value.trim() || null;
 
+    let saved: { ok: boolean; data: JobRead } | null = null;
     if (currentMatchedJob) {
-      await apiCall<JobRead>(`/api/v1/jobs/${currentMatchedJob.id}/status`, "PATCH", {
+      saved = await apiCall<JobRead>(`/api/v1/jobs/${currentMatchedJob.id}/status`, "PATCH", {
         status: statusVal,
         resume_id: resumeId,
         note,
       });
     } else {
       const payload = readPostingFromForm();
-      await apiCall<JobRead>("/api/v1/jobs", "POST", {
+      saved = await apiCall<JobRead>("/api/v1/jobs", "POST", {
         ...payload,
         status: statusVal,
         resume_id: resumeId,
@@ -816,6 +937,13 @@ async function initSidePanel(): Promise<void> {
     }
     $("apply-confirm-panel").classList.add("hidden");
     $<HTMLInputElement>("input-confirm-note").value = "";
+    if (!saved?.ok || !saved.data) {
+      showGlobalError("Could not save this application. Check that the local backend is running.");
+      return;
+    }
+    currentMatchedJob = saved.data;
+    renderJobDetails(saved.data);
+    showGlobalError(null);
     await resolveCurrentForm();
   });
 

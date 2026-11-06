@@ -77,6 +77,10 @@ def test_full_job_lifecycle_and_reversible_linking(
     assert updated_job["resume_id"] == resume_id
     assert updated_job["resume_label"] == "Backend Python v3"
     assert updated_job["resume_pdf_ref"] == "C:\\Users\\wissa\\Resumes\\Backend_Python_v3.pdf"
+    assert updated_job["application_count"] == 1
+    assert len(updated_job["applications"]) == 1
+    first_application_id = updated_job["applications"][0]["id"]
+    first_applied_at = updated_job["applications"][0]["applied_at"]
 
     # 4. Link a duplicate LinkedIn posting to the same Job, then test reversible unlink
     li_dup = sample_postings["cloudscale_linkedin_duplicate"]
@@ -89,6 +93,33 @@ def test_full_job_lifecycle_and_reversible_linking(
     unlink_resp = client.post(f"/api/v1/jobs/{job_id}/unlink-posting/{second_posting_id}")
     assert unlink_resp.status_code == 200
     assert len(unlink_resp.json()["postings"]) == 1
+
+    # 5. Applying again keeps the first date and adds today's date plus the resume used
+    again_resp = client.patch(
+        f"/api/v1/jobs/{job_id}/status",
+        json={
+            "status": "applied",
+            "resume_id": resume_id,
+            "note": "Applied again after the posting was refreshed.",
+        },
+    )
+    assert again_resp.status_code == 200
+    again = again_resp.json()
+    assert again["application_count"] == 2
+    assert len(again["applications"]) == 2
+    assert again["applications"][0]["note"] == "Applied again after the posting was refreshed."
+    assert again["applications"][0]["resume_id"] == resume_id
+    assert again["applied_at"] == again["applications"][0]["applied_at"]
+    kept = next(item for item in again["applications"] if item["id"] == first_application_id)
+    assert kept["applied_at"] == first_applied_at
+
+    later_status = client.patch(
+        f"/api/v1/jobs/{job_id}/status",
+        json={"status": "interviewing", "note": "Recruiter screen scheduled."},
+    )
+    assert later_status.status_code == 200
+    assert later_status.json()["status"] == "interviewing"
+    assert later_status.json()["application_count"] == 2
 
 
 def test_ai_analysis_quote_verification_cache_and_profile_comparison(
@@ -204,3 +235,52 @@ def test_deterministic_quote_verifier_rejects_hallucinations() -> None:
     source = "Applicants must be authorized to work in the United States. Requires 3+ years of Python experience."
     assert verify_quote_in_text("Applicants must be authorized to work in the United States.", source) is True
     assert verify_quote_in_text("Must be a U.S. citizen with active Top Secret clearance.", source) is False
+
+
+def test_ats_confirmation_page_recovery_on_save(client: TestClient) -> None:
+    """When a user views a real job posting and then clicks 'Confirm Applied' on an ATS 'Thank You' page, the real job metadata is preserved."""
+    real_job_payload = {
+        "source_url": "https://cognizant.taleo.net/careersection/global/jobdetail.ftl?job=0005991122",
+        "company": "Cognizant",
+        "title": "Cloud & AI Software Engineer",
+        "location": "Plano, TX (Hybrid)",
+        "description_text": "Build cloud and AI solutions in Python and AWS. Hybrid 3-4 days a week in Plano, TX.",
+    }
+    # Step 1: Extension resolves the real job page when the user opens it
+    res1 = client.post("/api/v1/jobs/resolve", json=real_job_payload)
+    assert res1.status_code == 200
+    assert res1.json()["match_state"] == "no_local_record"
+
+    # Step 2: User finishes the application wizard on flow.jsf ("Thank You") and clicks Confirm Applied
+    thank_you_save = client.post(
+        "/api/v1/jobs",
+        json={
+            "source_url": "https://cognizant.taleo.net/careersection/careersection/candidateacquisition/flow.jsf",
+            "company": "cognizant",
+            "title": "Thank You",
+            "status": "applied",
+            "note": "Submitted via Taleo flow.",
+        },
+    )
+    assert thank_you_save.status_code == 201
+    saved_job = thank_you_save.json()
+    assert saved_job["title_raw"] == "Cloud & AI Software Engineer"
+    assert saved_job["status"] == "applied"
+    assert saved_job["application_count"] == 1
+
+    # Step 3: Revisiting the real job posting or a LinkedIn repost immediately recognizes it as Previously Applied
+    revisit = client.post(
+        "/api/v1/jobs/resolve",
+        json={
+            "source_url": "https://www.linkedin.com/jobs/view/8877665544/",
+            "company": "Cognizant Technology Solutions",
+            "title": "Cloud and AI Software Engineer - Plano, TX (Full Time)",
+            "description_text": "Build cloud and AI solutions in Python and AWS. Hybrid 3-4 days a week in Plano, TX.",
+        },
+    )
+    assert revisit.status_code == 200
+    rev_data = revisit.json()
+    assert rev_data["matched_job"] is not None
+    assert rev_data["matched_job"]["id"] == saved_job["id"]
+    assert rev_data["matched_job"]["status"] == "applied"
+

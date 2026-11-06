@@ -54,6 +54,15 @@ export interface PostingRead {
   last_seen_at: string;
 }
 
+export interface JobApplicationRead {
+  id: string;
+  job_id: string;
+  applied_at: string;
+  resume_id: string | null;
+  resume_label: string | null;
+  note: string | null;
+}
+
 export interface JobEventRead {
   id: string;
   job_id: string;
@@ -78,6 +87,7 @@ export interface JobRead {
   canonical_ats_url: string | null;
   status: JobStatus;
   applied_at: string | null;
+  application_count: number;
   applied_via_posting_id: string | null;
   resume_id: string | null;
   resume_label: string | null;
@@ -86,6 +96,7 @@ export interface JobRead {
   created_at: string;
   updated_at: string;
   postings: PostingRead[];
+  applications: JobApplicationRead[];
   events: JobEventRead[];
 }
 

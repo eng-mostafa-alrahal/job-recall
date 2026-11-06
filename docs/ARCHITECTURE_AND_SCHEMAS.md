@@ -77,21 +77,34 @@ Represents one distinct job opening and the user's application relationship to i
 | `employer_req_id` | `TEXT` | `NULL, INDEX` | Verified employer/ATS requisition ID if known (e.g., `"JR-10492"`). |
 | `canonical_ats_url` | `TEXT` | `NULL, INDEX` | Normalized ATS URL if known (e.g., `"https://boards.greenhouse.io/acme/jobs/49102"`). |
 | `status` | `TEXT` | `NOT NULL, INDEX` | `saved`, `in_progress`, `applied`, `interviewing`, `offer`, `rejected`, `withdrawn`, `unknown`. |
-| `applied_at` | `DATETIME` | `NULL` | Timestamp when user confirmed application submission. |
+| `applied_at` | `DATETIME` | `NULL` | Date of the latest confirmed application. Earlier dates live in `job_applications`. |
 | `applied_via_posting_id` | `TEXT (UUID)` | `NULL, FK(postings.id)` | Which specific posting was used to apply. |
 | `resume_id` | `TEXT (UUID)` | `NULL, FK(resumes.id) ON DELETE SET NULL` | Reference to which reusable `Resume` in `resumes` was submitted for this job. |
 | `confirmation_ref` | `TEXT` | `NULL` | Optional confirmation ID / email snippet. |
 | `created_at` | `DATETIME` | `NOT NULL` | First observed/saved timestamp (UTC). |
 | `updated_at` | `DATETIME` | `NOT NULL` | Last status or note update timestamp (UTC). |
 
-### 2.2 `postings` (Observed Job Board / ATS Pages)
+### 2.2 `job_applications` (Each Confirmed Submission)
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `TEXT (UUID)` | `PRIMARY KEY` | Application attempt ID. |
+| `job_id` | `TEXT (UUID)` | `NOT NULL, FK(jobs.id) ON DELETE CASCADE, INDEX` | Canonical job. |
+| `applied_at` | `DATETIME` | `NOT NULL, INDEX` | Date recorded when the user confirmed this submission. |
+| `resume_id` | `TEXT (UUID)` | `NULL, FK(resumes.id) ON DELETE SET NULL` | Resume used for this submission. |
+| `note` | `TEXT` | `NULL` | Optional confirmation note for this submission. |
+| `created_at` | `DATETIME` | `NOT NULL` | When the row was stored. |
+
+`jobs.applied_at` and `jobs.resume_id` mirror the latest row. Confirming Applied again inserts a new row and does not delete older ones. Changing status to interviewing, rejected, or withdrawn does not add a row.
+
+### 2.3 `postings` (Observed Job Board / ATS Pages)
 A single `Job` can have multiple `Postings` (e.g., one on LinkedIn, one on Indeed, one on Workday).
 
 | Column | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | `TEXT (UUID)` | `PRIMARY KEY` | Posting ID. |
 | `job_id` | `TEXT (UUID)` | `NOT NULL, FK(jobs.id) ON DELETE CASCADE, INDEX` | Linked canonical `Job`. |
-| `platform` | `TEXT` | `NOT NULL, INDEX` | `linkedin`, `indeed`, `dice`, `greenhouse`, `workday`, `lever`, `ashby`, `icims`, `manual`, `other`. |
+| `platform` | `TEXT` | `NOT NULL, INDEX` | `linkedin`, `indeed`, `dice`, `jobright`, `greenhouse`, `workday`, `lever`, `ashby`, `icims`, `manual`, `other`. |
 | `source_url_raw` | `TEXT` | `NOT NULL` | Original URL captured from browser. |
 | `source_url_norm` | `TEXT` | `NOT NULL, INDEX` | Normalized URL (tracking params stripped). |
 | `source_posting_id` | `TEXT` | `NULL, INDEX` | Platform-specific job ID (e.g., LinkedIn `currentJobId`, Indeed `jk`). |
@@ -103,7 +116,7 @@ A single `Job` can have multiple `Postings` (e.g., one on LinkedIn, one on Indee
 
 *Unique index on `(platform, source_posting_id)` where `source_posting_id IS NOT NULL`.*
 
-### 2.3 `job_events` (Immutable History & Notes Log)
+### 2.4 `job_events` (Immutable History & Notes Log)
 Tracks every status transition, user note, and duplicate link/unlink action.
 
 | Column | Type | Constraints | Description |
@@ -117,7 +130,7 @@ Tracks every status transition, user note, and duplicate link/unlink action.
 | `metadata_json` | `TEXT (JSON)` | `NULL` | Extra context (e.g., linked `posting_id`, confirmation ref). |
 | `created_at` | `DATETIME` | `NOT NULL, INDEX` | Event timestamp (UTC). |
 
-### 2.4 `dismissed_duplicates` (User-Rejected Duplicate Suggestions)
+### 2.5 `dismissed_duplicates` (User-Rejected Duplicate Suggestions)
 Prevents nagging the user about two postings they have already confirmed are separate openings.
 
 | Column | Type | Constraints | Description |
@@ -129,7 +142,7 @@ Prevents nagging the user about two postings they have already confirmed are sep
 | `dismissed_posting_id` | `TEXT` | `NULL` | Platform posting ID or requisition ID that was rejected. |
 | `created_at` | `DATETIME` | `NOT NULL` | When the user clicked "Not a duplicate". |
 
-### 2.5 `requirement_analyses` (Cached LLM Extractions)
+### 2.6 `requirement_analyses` (Cached LLM Extractions)
 Keyed by `cleaned_text_hash` so identical job descriptions across visits (or across re-posts) never trigger duplicate LLM calls.
 
 | Column | Type | Constraints | Description |
@@ -143,7 +156,7 @@ Keyed by `cleaned_text_hash` so identical job descriptions across visits (or acr
 | `latency_ms` | `INTEGER` | `NOT NULL` | How long the LLM call took in milliseconds. |
 | `created_at` | `DATETIME` | `NOT NULL` | Cache entry creation timestamp. |
 
-### 2.6 `user_profile` (Single-Row Local Eligibility Profile)
+### 2.7 `user_profile` (Single-Row Local Eligibility Profile)
 Stores the user's optional local eligibility parameters for rule-based comparison.
 
 | Column | Type | Constraints | Description |
@@ -163,7 +176,7 @@ Stores the user's optional local eligibility parameters for rule-based compariso
 | `skills_and_domains_json` | `TEXT (JSON)` | `NULL` | Aggregated list of skills/domains from resumes + user edits. |
 | `updated_at` | `DATETIME` | `NOT NULL` | Last profile update timestamp. |
 
-### 2.7 `resumes` (Reusable Resume Text + PDF Reference)
+### 2.8 `resumes` (Reusable Resume Text + PDF Reference)
 Because a user typically reuses the same 1–4 resumes across most applications, each variant is stored once. SQLite keeps the plain text and original filename (`pdf_ref`). The PDF bytes are copied once into `data/resumes/{resume_id}.pdf` (the same persisted data directory as the database). Every `Job` references `resume_id`. Download the stored copy with `GET /api/v1/resumes/{resume_id}/pdf`.
 
 | Column | Type | Constraints | Description |
@@ -203,27 +216,31 @@ Before querying SQLite, the normalizer extracts canonical identifiers from any U
    - Set `platform = "lever"`, `source_posting_id = "<company>:<uuid>"`.
 6. **Ashby (`jobs.ashbyhq.com/<company>/<uuid>`):**
    - Set `platform = "ashby"`, `source_posting_id = "<company>:<uuid>"`.
-7. **Generic Fallback:**
+7. **Jobright (`jobright.ai/jobs/info/<id>`):**
+   - Set `platform = "jobright"`, `source_posting_id = <id>`, `source_url_norm = "https://jobright.ai/jobs/info/<id>"`.
+   - The employer is the posting's company (`companyResult.companyName` in the page JSON), never the site name `Jobright.ai`.
+8. **Generic Fallback:**
    - Lowercase scheme + host, strip `utm_*`, `ref`, `trk`, `gh_src`, `source`, `fbclid`, `gclid` query parameters, strip trailing slash.
 
 ### 3.2 Company, Title, and Description Normalization
-- **Company (`company_norm`):** Lowercase, strip corporate suffixes (`inc`, `llc`, `corp`, `corporation`, `ltd`, `co`, `group`, `technologies`, `labs`), strip punctuation, collapse whitespace.
-- **Title (`title_norm`):** Lowercase, normalize common Roman numerals/levels (`iii` -> `3`, `ii` -> `2`, `sr.` -> `senior`, `jr.` -> `junior`, `swe` -> `software engineer`), strip punctuation.
-- **Description (`cleaned_text_hash`):**
+- **Company (`company_norm` & `company_similarity`):** Lowercase, strip corporate suffixes (`inc`, `llc`, `corp`, `corporation`, `ltd`, `co`, `group`, `technologies`, `solutions`, `labs`, `consulting`, `global`, `services`), strip punctuation, collapse whitespace. `company_similarity()` also matches brand prefixes and token subsets (e.g., `"Cognizant"` vs. `"Cognizant Technology Solutions"`), while `is_generic_company_name()` detects board hostnames (`"linkedin"`, `"indeed"`, `"dice"`, `"jobright"`, `"jobright ai"`) so they never block matching. A saved Jobright capture whose company was the site name is self-healed when the same posting is opened again with the real employer.
+- **Title (`title_norm` & `extract_core_job_title`):** Strip parenthetical employment qualifiers (`(Full Time Only)`, `(Remote)`, `[Hybrid]`) and trailing location segments (`- Irving, TX OR Tampa, FL`), normalize compound terms (`Gen AI` / `Generative AI` -> `genai`, `Full-Stack` -> `fullstack`) and Roman numerals/levels (`iii` -> `3`, `ii` -> `2`, `sr.` -> `senior`, `jr.` -> `junior`, `swe` -> `software engineer`). `is_placeholder_or_confirmation_title()` detects ATS confirmation titles (`"Thank You"`, `"Application Submitted"`).
+- **Description (`cleaned_text_hash` & `compute_description_similarity`):**
   1. Remove known job-board chrome lines (e.g., `"Reposted X days ago"`, `"Over 100 applicants"`, `"Actively reviewing applicants"`, `"Show more"`, `"Show less"`).
-  2. Lowercase, collapse all whitespace sequences to a single space, trim.
+  2. Replace unicode bullet characters (`\u00b7`, `\u2022`, `\ufffd`, `•`, `·`) with spaces so words are never glued together, lowercase, collapse whitespace, and trim.
   3. Compute `hashlib.sha256(cleaned_text.encode("utf-8")).hexdigest()`.
+  4. `compute_description_similarity()` combines token Jaccard, token Dice, token containment (for cross-platform postings with extra EEO/company boilerplate or shorter excerpts), and 2-word phrase bigrams.
 
-### 3.3 Four-Tier Matching Strategy (`services/matcher.py`)
+### 3.3 Four-Tier Matching Strategy & Self-Healing (`services/matcher.py`)
 
 When `POST /api/v1/jobs/resolve` is called:
 
 | Tier | Match Condition | Match Label Returned | Auto-Merged? |
 |---|---|---|---|
-| **Tier 1: Exact Identity** | Same `(platform, source_posting_id)`, OR same `source_url_norm`, OR same `(company_norm, employer_req_id)` where `employer_req_id` is non-null. | `EXACT_MATCH` (`previously_applied` or `saved_in_progress`) | **Yes** — updates `last_seen_at` on the matched `Posting`. |
-| **Tier 2: Strong Cross-Platform Match** | Same `canonical_ats_url`, OR same `(company_norm, title_norm)` AND identical `cleaned_text_hash` AND no conflicting `requisition_id`. | `STRONG_CANDIDATE` (`possible_duplicate` with `confidence >= 0.90`) | **No** — highlighted at top of Side Panel with 1-click **"Confirm Same Job"**. |
-| **Tier 3: Fuzzy Possible Duplicate** | Same `company_norm` AND (exact `title_norm` OR title token Jaccard `>= 0.75` OR description trigram/token Jaccard `>= 0.65`) AND **not** conflicting `requisition_id` AND **not** in `dismissed_duplicates`. | `POSSIBLE_DUPLICATE` (`confidence 0.55 - 0.89`) | **No** — shown as reviewable card with match explanation & **"Link"** / **"Not Same Job"** buttons. |
-| **Tier 4: Unmatched** | No candidate passes Tier 1–3 (or candidates have conflicting non-null requisition IDs like `JR-101` vs `JR-102`). | `NO_MATCH` (`no_local_record`) | **No** — shows clean state ready to Save or Mark Applied. |
+| **Tier 1: Exact & Same-Platform Repost Identity** | Same `(platform, source_posting_id)`, OR same non-generic `source_url_norm`, OR same `(company, employer_req_id)`, OR same-platform repost matching company + core title/description (including recovery from generic company `"linkedin"` or ATS `"Thank You"` confirmation records). | `EXACT_MATCH` (`previously_applied` or `saved_in_progress`) | **Yes** — updates `last_seen_at` and self-heals placeholder titles/companies via `_self_heal_job_metadata()`. |
+| **Tier 2: Strong Cross-Platform Match** | Same `canonical_ats_url`, OR matching company (`>= 0.85`) with identical `cleaned_text_hash` or high core-title + description similarity (`confidence >= 0.88`) and no conflicting `requisition_id`. | `STRONG_CANDIDATE` (`possible_duplicate` with `confidence >= 0.88`, `matched_job` attached) | **Prominent Banner + 1-Click Link** — Side Panel displays the `Previously Applied` / `Saved` status banner and job details immediately alongside 1-click **"Same Job — Link Posting"**. |
+| **Tier 3: Fuzzy Possible Duplicate** | Compatible company AND (`title_sim >= 0.60` with `desc_sim >= 0.45`, OR `desc_sim >= 0.62`, OR cross-agency high title + description overlap) AND **not** conflicting `requisition_id` AND **not** in `dismissed_duplicates`. | `POSSIBLE_DUPLICATE` (`confidence 0.55 - 0.87`) | **No** — shown as reviewable card with match explanation & **"Same Job — Link Posting"** / **"Different Job"** buttons. |
+| **Tier 4: Unmatched** | No candidate passes Tier 1–3 (or candidates have conflicting non-null requisition IDs like `JR-101` vs `JR-102`). | `NO_MATCH` (`no_local_record`) | **No** — shows clean state ready to Save or Confirm Applied. |
 
 > **Critical Guardrail:** If the incoming page has `requisition_id = "JR-1002"` and an existing job at the same company has `employer_req_id = "JR-1001"`, Tier 2 and Tier 3 **must not** suggest merging them (or must explicitly warn: *"Different requisition IDs detected: JR-1002 vs JR-1001"*).
 

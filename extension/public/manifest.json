@@ -41,7 +41,9 @@
         "https://*.icims.com/*",
         "https://*.eightfold.ai/*",
         "https://*.workable.com/*",
-        "https://*.bamboohr.com/*"
+        "https://*.bamboohr.com/*",
+        "https://jobright.ai/*",
+        "https://*.jobright.ai/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"

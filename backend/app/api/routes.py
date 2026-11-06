@@ -13,6 +13,7 @@ from app.database import get_db
 from app.models.entities import (
     DismissedDuplicate,
     Job,
+    JobApplication,
     JobEvent,
     Posting,
     Resume,
@@ -24,6 +25,7 @@ from app.schemas.jobs import (
     AddNoteRequest,
     CandidateMatch,
     CreateJobRequest,
+    JobApplicationRead,
     DismissDuplicateRequest,
     JobEventRead,
     JobRead,
@@ -43,7 +45,14 @@ from app.schemas.resumes_profile import (
 )
 from app.services.analyzer import analyze_job_description, get_cached_analysis
 from app.services.matcher import resolve_posting_against_db
-from app.services.normalizer import normalize_posting_input
+from app.services.normalizer import (
+    company_similarity,
+    is_generic_ats_flow_url,
+    is_generic_company_name,
+    is_placeholder_or_confirmation_title,
+    normalize_company_name,
+    normalize_posting_input,
+)
 from app.services.resume_parser import (
     compute_resume_hash,
     extract_text_from_pdf_bytes,
@@ -111,6 +120,7 @@ def _serialize_job(job: Job) -> JobRead:
         canonical_ats_url=job.canonical_ats_url,
         status=job.status,  # type: ignore[arg-type]
         applied_at=job.applied_at,
+        application_count=len(job.applications),
         applied_via_posting_id=job.applied_via_posting_id,
         resume_id=job.resume_id,
         resume_label=job.resume.label if job.resume else None,
@@ -119,6 +129,17 @@ def _serialize_job(job: Job) -> JobRead:
         created_at=job.created_at,
         updated_at=job.updated_at,
         postings=postings_out,
+        applications=[
+            JobApplicationRead(
+                id=app.id,
+                job_id=app.job_id,
+                applied_at=app.applied_at,
+                resume_id=app.resume_id,
+                resume_label=app.resume.label if app.resume else None,
+                note=app.note,
+            )
+            for app in job.applications
+        ],
         events=events_out,
     )
 
@@ -188,6 +209,7 @@ def _load_job_or_404(db: Session, job_id: str) -> Job:
             selectinload(Job.postings),
             selectinload(Job.events),
             selectinload(Job.resume),
+            selectinload(Job.applications).selectinload(JobApplication.resume),
             selectinload(Job.dismissed_duplicates),
         )
         .execution_options(populate_existing=True)
@@ -227,25 +249,106 @@ def health_check(
 
 # --- JOB RESOLUTION & TRACKING ENDPOINTS ---
 
+_RECENT_RESOLVED_POSTINGS: list[dict[str, Any]] = []
+
+
+def _record_recent_valid_posting(payload: ResolveJobRequest | CreateJobRequest) -> None:
+    if is_placeholder_or_confirmation_title(payload.title):
+        return
+    if is_generic_ats_flow_url(payload.source_url):
+        return
+    desc = (payload.description_text or "").strip()
+    if len(desc) < 60 and is_generic_company_name(normalize_company_name(payload.company)):
+        return
+    entry = {
+        "source_url": payload.source_url,
+        "company": payload.company,
+        "title": payload.title,
+        "location": payload.location,
+        "work_mode": payload.work_mode,
+        "platform": payload.platform,
+        "source_posting_id": payload.source_posting_id,
+        "requisition_id": payload.requisition_id,
+        "canonical_ats_url": payload.canonical_ats_url,
+        "description_text": payload.description_text,
+    }
+    _RECENT_RESOLVED_POSTINGS.insert(0, entry)
+    del _RECENT_RESOLVED_POSTINGS[25:]
+
+
+def _recover_from_recent_posting_if_wizard(
+    company: str,
+    title: str,
+    description_text: str | None,
+) -> dict[str, Any] | None:
+    if not is_placeholder_or_confirmation_title(title) and (
+        description_text and len(description_text.strip()) >= 60
+    ):
+        return None
+    comp_norm = normalize_company_name(company)
+    for item in _RECENT_RESOLVED_POSTINGS:
+        item_comp_norm = normalize_company_name(item.get("company") or "")
+        if (
+            not is_generic_company_name(comp_norm)
+            and not is_generic_company_name(item_comp_norm)
+            and company_similarity(comp_norm, item_comp_norm) >= 0.80
+        ):
+            return item
+    if is_placeholder_or_confirmation_title(title) and _RECENT_RESOLVED_POSTINGS:
+        return _RECENT_RESOLVED_POSTINGS[0]
+    return None
+
+
 @router.post("/jobs/resolve", response_model=ResolveJobResponse, dependencies=[Depends(verify_api_token)])
 def resolve_job(
     payload: ResolveJobRequest,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> ResolveJobResponse:
+    _record_recent_valid_posting(payload)
+    recovered = _recover_from_recent_posting_if_wizard(
+        payload.company, payload.title, payload.description_text
+    )
+    eff_company = (
+        recovered["company"]
+        if recovered and is_generic_company_name(normalize_company_name(payload.company))
+        else payload.company
+    )
+    eff_title = (
+        recovered["title"]
+        if recovered and is_placeholder_or_confirmation_title(payload.title)
+        else payload.title
+    )
+    eff_desc = (
+        payload.description_text
+        if (payload.description_text and len(payload.description_text.strip()) >= 60)
+        else (recovered["description_text"] if recovered else payload.description_text)
+    )
+    eff_url = (
+        recovered["source_url"]
+        if recovered and is_generic_ats_flow_url(payload.source_url)
+        else payload.source_url
+    )
+
     norm = normalize_posting_input(
-        source_url=payload.source_url,
-        company=payload.company,
-        title=payload.title,
-        location=payload.location,
-        work_mode=payload.work_mode,
+        source_url=eff_url,
+        company=eff_company,
+        title=eff_title,
+        location=payload.location or (recovered.get("location") if recovered else None),
+        work_mode=payload.work_mode or (recovered.get("work_mode") if recovered else None),
         platform=payload.platform,
         source_posting_id=payload.source_posting_id,
-        requisition_id=payload.requisition_id,
+        requisition_id=payload.requisition_id or (recovered.get("requisition_id") if recovered else None),
         canonical_ats_url=payload.canonical_ats_url,
-        description_text=payload.description_text,
+        description_text=eff_desc,
     )
-    outcome = resolve_posting_against_db(db, norm)
+    outcome = resolve_posting_against_db(
+        db,
+        norm,
+        raw_company=eff_company,
+        raw_title=eff_title,
+        raw_description=eff_desc,
+    )
 
     cached_analysis = get_cached_analysis(
         db,
@@ -287,28 +390,139 @@ def create_or_save_job(
     payload: CreateJobRequest,
     db: Session = Depends(get_db),
 ) -> JobRead:
+    _record_recent_valid_posting(payload)
+    recovered = _recover_from_recent_posting_if_wizard(
+        payload.company, payload.title, payload.description_text
+    )
+    eff_company = (
+        recovered["company"]
+        if recovered and is_generic_company_name(normalize_company_name(payload.company))
+        else payload.company
+    )
+    eff_title = (
+        recovered["title"]
+        if recovered and is_placeholder_or_confirmation_title(payload.title)
+        else payload.title
+    )
+    eff_desc = (
+        payload.description_text
+        if (payload.description_text and len(payload.description_text.strip()) >= 60)
+        else (recovered["description_text"] if recovered else payload.description_text)
+    )
+    eff_location = payload.location or (recovered.get("location") if recovered else None)
+    eff_url = (
+        recovered["source_url"]
+        if recovered and is_generic_ats_flow_url(payload.source_url)
+        else payload.source_url
+    )
+
     norm = normalize_posting_input(
-        source_url=payload.source_url,
-        company=payload.company,
-        title=payload.title,
-        location=payload.location,
+        source_url=eff_url,
+        company=eff_company,
+        title=eff_title,
+        location=eff_location,
         work_mode=payload.work_mode,
         platform=payload.platform,
         source_posting_id=payload.source_posting_id,
-        requisition_id=payload.requisition_id,
+        requisition_id=payload.requisition_id or (recovered.get("requisition_id") if recovered else None),
         canonical_ats_url=payload.canonical_ats_url,
-        description_text=payload.description_text,
+        description_text=eff_desc,
     )
 
     now = utcnow()
     applied_at = payload.applied_at or (now if payload.status == "applied" else None)
 
+    # Check if this canonical job opening already exists in the database so reposts/cross-posts merge cleanly
+    existing_outcome = resolve_posting_against_db(
+        db,
+        norm,
+        raw_company=eff_company,
+        raw_title=eff_title,
+        raw_description=eff_desc,
+    )
+    existing_job = existing_outcome.matched_job
+    if existing_job is not None and (
+        existing_outcome.match_tier == "EXACT_MATCH"
+        or (
+            existing_outcome.candidates
+            and existing_outcome.candidates[0].confidence >= 0.88
+        )
+    ):
+        already_linked = next(
+            (
+                p
+                for p in existing_job.postings
+                if p.source_url_norm == norm.source_url_norm
+                or (
+                    norm.source_posting_id
+                    and p.platform == norm.platform
+                    and p.source_posting_id == norm.source_posting_id
+                )
+            ),
+            None,
+        )
+        if already_linked:
+            already_linked.last_seen_at = now
+            if eff_desc and not already_linked.description_raw:
+                already_linked.description_raw = eff_desc
+                already_linked.cleaned_text_hash = norm.cleaned_text_hash
+            active_posting_id = already_linked.id
+        else:
+            new_posting = Posting(
+                job_id=existing_job.id,
+                platform=norm.platform,
+                source_url_raw=eff_url.strip(),
+                source_url_norm=norm.source_url_norm,
+                source_posting_id=norm.source_posting_id,
+                requisition_id=norm.requisition_id,
+                description_raw=eff_desc,
+                cleaned_text_hash=norm.cleaned_text_hash,
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+            db.add(new_posting)
+            db.flush()
+            active_posting_id = new_posting.id
+
+        old_status = existing_job.status
+        existing_job.status = payload.status
+        existing_job.updated_at = now
+        if payload.confirmation_ref:
+            existing_job.confirmation_ref = payload.confirmation_ref
+        if payload.resume_id:
+            existing_job.resume_id = payload.resume_id
+        if payload.status == "applied":
+            existing_job.applied_at = applied_at or now
+            existing_job.applied_via_posting_id = active_posting_id
+            db.add(
+                JobApplication(
+                    job_id=existing_job.id,
+                    applied_at=applied_at or now,
+                    resume_id=payload.resume_id or existing_job.resume_id,
+                    note=payload.note,
+                    created_at=now,
+                )
+            )
+        db.add(
+            JobEvent(
+                job_id=existing_job.id,
+                event_type="status_changed",
+                old_status=old_status,
+                new_status=payload.status,
+                note=payload.note or f"Updated from {norm.platform} with status '{payload.status}'.",
+                metadata_json=json.dumps({"posting_id": active_posting_id, "platform": norm.platform}),
+                created_at=now,
+            )
+        )
+        db.commit()
+        return _serialize_job(_load_job_or_404(db, existing_job.id))
+
     job = Job(
-        company_raw=payload.company.strip(),
+        company_raw=eff_company.strip(),
         company_norm=norm.company_norm,
-        title_raw=payload.title.strip(),
+        title_raw=eff_title.strip(),
         title_norm=norm.title_norm,
-        location_raw=payload.location.strip() if payload.location else None,
+        location_raw=eff_location.strip() if eff_location else None,
         location_norm=norm.location_norm,
         work_mode=norm.work_mode,
         employer_req_id=norm.requisition_id,
@@ -326,11 +540,11 @@ def create_or_save_job(
     posting = Posting(
         job_id=job.id,
         platform=norm.platform,
-        source_url_raw=payload.source_url.strip(),
+        source_url_raw=eff_url.strip(),
         source_url_norm=norm.source_url_norm,
         source_posting_id=norm.source_posting_id,
         requisition_id=norm.requisition_id,
-        description_raw=payload.description_text,
+        description_raw=eff_desc,
         cleaned_text_hash=norm.cleaned_text_hash,
         first_seen_at=now,
         last_seen_at=now,
@@ -340,6 +554,15 @@ def create_or_save_job(
 
     if payload.status == "applied":
         job.applied_via_posting_id = posting.id
+        db.add(
+            JobApplication(
+                job_id=job.id,
+                applied_at=applied_at or now,
+                resume_id=payload.resume_id,
+                note=payload.note,
+                created_at=now,
+            )
+        )
 
     event = JobEvent(
         job_id=job.id,
@@ -370,6 +593,7 @@ def list_jobs(
             selectinload(Job.postings),
             selectinload(Job.events),
             selectinload(Job.resume),
+            selectinload(Job.applications).selectinload(JobApplication.resume),
         )
         .order_by(Job.updated_at.desc())
     )
@@ -423,23 +647,36 @@ def update_job_status(
     now = utcnow()
 
     job.status = payload.status
-    if payload.status == "applied" and not job.applied_at:
-        job.applied_at = payload.applied_at or now
-    elif payload.applied_at is not None:
-        job.applied_at = payload.applied_at
+    job.updated_at = now
 
-    if payload.resume_id is not None:
-        job.resume_id = payload.resume_id
     if payload.confirmation_ref is not None:
         job.confirmation_ref = payload.confirmation_ref
-    job.updated_at = now
+
+    event_note = payload.note or f"Status changed from '{old_status}' to '{payload.status}'."
+    if payload.status == "applied":
+        resume_id = payload.resume_id if payload.resume_id is not None else job.resume_id
+        job.applied_at = now
+        job.resume_id = resume_id
+        db.add(
+            JobApplication(
+                job_id=job.id,
+                applied_at=now,
+                resume_id=resume_id,
+                note=payload.note or payload.confirmation_ref,
+                created_at=now,
+            )
+        )
+        if old_status == "applied":
+            event_note = payload.note or "Applied again. Earlier application dates were kept."
+    elif payload.resume_id is not None:
+        job.resume_id = payload.resume_id
 
     event = JobEvent(
         job_id=job.id,
         event_type="status_changed",
         old_status=old_status,
         new_status=payload.status,
-        note=payload.note or f"Status changed from '{old_status}' to '{payload.status}'.",
+        note=event_note,
         metadata_json=json.dumps(
             {
                 "resume_id": job.resume_id,
